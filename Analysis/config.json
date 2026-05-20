@@ -1,0 +1,31 @@
+{
+    "defaultIcon": "chart-line",
+    "description": "A graphing and analysis tool for data visualization and statistical analysis.",
+    "descriptionFull": {
+        "title": "Provides graphing and analysis capabilities using ECharts for interactive data visualization and statistical analysis of layer data.",
+        "example": {
+            "width": "(number) custom panel width in pixels [default 350]",
+            "expanded": "(bool) initial state expanded [default true]"
+        }
+    },
+    "hasVars": true,
+    "name": "Analysis",
+    "toolbarPriority": 4,
+    "paths": {
+        "AnalysisTool": "essence/MMGIS-Plugin-Tools-AI-Agent/Analysis/AnalysisTool"
+    },
+    "expandable": true,
+    "config": {
+        "rows": [
+            {
+                "components": []
+            }
+        ]
+    },
+    "dependencies": {
+        "npm": {
+            "d3": "^7.9.0",
+            "echarts": "^5.4.3"
+        }
+    }
+}

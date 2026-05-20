@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+plugin-package.json
+plugin-python-requirements.txt
+plugin-conda-deps.txt
