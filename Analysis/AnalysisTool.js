@@ -5,10 +5,16 @@ import F_ from '../../Basics/Formulae_/Formulae_'
 import L_ from '../../Basics/Layers_/Layers_'
 import Map_ from '../../Basics/Map_/Map_'
 
-import Help from '../../Ancillary/Help'
+import Help from '../../Basics/UserInterface_/components/Help/Help'
 import TimeControl from '../../Basics/TimeControl_/TimeControl'
 
 import './AnalysisTool.css'
+import {
+    buildMissionLayerCatalog,
+    getAnalyticsBaseUrl,
+    projectLatLng,
+    routeAnalysisApiCall,
+} from './analysisApi.js'
 
 const helpKey = 'AnalysisTool'
 const NODATA = 0
@@ -249,8 +255,7 @@ var AnalysisTool = {
     chartInstance: null,
     resizeHandler: null,
     resizeObserver: null,
-    //apiBaseUrl: `${window.location.origin}${(window.location.pathname || '').replace(/\/$/g, '')}/frozon_api`,
-    apiBaseUrl: 'https://ammos.nasa.gov/frozon/frozon_api',
+    apiBaseUrl: '',
     // Layer management
     availableLayers: {},
     selectedLayer: null,
@@ -287,8 +292,8 @@ var AnalysisTool = {
         markers: [], // Visual markers for selected points
     },
     initialize: function () {
-        //Get tool variables
-        this.vars = L_.getToolVars('analysis')
+        this.vars = L_.getToolVars('analysis') || {}
+        this.apiBaseUrl = getAnalyticsBaseUrl()
     },
     finalize: function () {
         // Any finalization logic can go here
@@ -1378,13 +1383,15 @@ var AnalysisTool = {
     // Layer Management Functions
     fetchLayers: async function () {
         try {
-            const response = await this.makeApiCall('/layers')
+            const response = buildMissionLayerCatalog()
             this.availableLayers = response.layers || {}
             this.defaultLayer =
                 response.default_layer || Object.keys(this.availableLayers)[0]
 
             this.populateLayerDropdown()
-            this.selectLayer(this.defaultLayer)
+            if (this.defaultLayer) {
+                this.selectLayer(this.defaultLayer)
+            }
 
             return response
         } catch (error) {
@@ -1559,20 +1566,22 @@ var AnalysisTool = {
     },
 
     updateLayerInfoDisplay: function (layerInfo) {
-        // Update time range
-        const timeRange = layerInfo.time_range
-        const startDate = new Date(timeRange.start).toLocaleDateString()
-        const endDate = new Date(timeRange.end).toLocaleDateString()
-        $('#analysisLayerTimeRange').text(`${startDate} - ${endDate}`)
-
-        // Update dimensions
-        const dimensions = `${layerInfo.shape.join(
-            ' × '
-        )} (${layerInfo.dimensions.join(', ')})`
-        $('#analysisLayerDimensions').text(dimensions)
-
-        // Update EPSG
-        $('#analysisLayerEPSG').text(`EPSG:${layerInfo.epsg}`)
+        const timeRange = layerInfo.time_range || {}
+        const formatDate = (value) => {
+            if (!value || value === 'N/A') return 'N/A'
+            const parsed = new Date(value)
+            return Number.isNaN(parsed.getTime())
+                ? String(value)
+                : parsed.toLocaleDateString()
+        }
+        const meta = []
+        if (layerInfo.sourceType) meta.push(layerInfo.sourceType)
+        if (layerInfo.units) meta.push(layerInfo.units)
+        if (layerInfo.epsg) meta.push(`EPSG:${layerInfo.epsg}`)
+        const rangeText = `${formatDate(timeRange.start)} - ${formatDate(timeRange.end)}`
+        $('#analysisLayerTimeRange').text(
+            meta.length ? `${rangeText} · ${meta.join(' · ')}` : rangeText
+        )
     },
 
     getDetailedProjectedBounds: async function (projectedBounds, epsg) {
@@ -1602,17 +1611,35 @@ var AnalysisTool = {
         method = 'GET',
         body = null
     ) {
-        let baseUrl = this.apiBaseUrl
-
-        // Ensure baseUrl doesn't end with slash and endpoint starts with slash for proper joining
-        baseUrl = baseUrl.replace(/\/$/, '')
         if (!endpoint.startsWith('/')) {
             endpoint = '/' + endpoint
         }
 
-        // Construct full URL by concatenating base + endpoint
+        const missionRouted = [
+            '/layers',
+            '/histogram/projected',
+            '/timeseries/projected',
+            '/timeseries/batch',
+        ]
+        if (missionRouted.includes(endpoint)) {
+            try {
+                return await routeAnalysisApiCall(endpoint, params, method, body, {
+                    selectedLayer: this.selectedLayer,
+                    selectedLayerY: this.selectedLayerY,
+                })
+            } catch (error) {
+                console.error('Mission analytics API call failed:', error)
+                throw error
+            }
+        }
+
+        let baseUrl = (this.apiBaseUrl || getAnalyticsBaseUrl()).replace(
+            /\/$/,
+            ''
+        )
+
         const fullUrl = baseUrl + endpoint
-        const url = new URL(fullUrl)
+        const url = new URL(fullUrl, window.location.origin)
 
         // For GET requests, add parameters to URL
         if (method === 'GET') {
@@ -1709,21 +1736,7 @@ var AnalysisTool = {
      * @returns {Object} {x: number, y: number} - Projected coordinates
      */
     convertLatLngToProjected: function (lat, lng) {
-        if (!window.mmgisglobal || !window.mmgisglobal.customCRS) {
-            console.warn(
-                'MMGIS customCRS not available, using lat/lng directly'
-            )
-            return { x: lng, y: lat }
-        }
-
-        const projected = window.mmgisglobal.customCRS.project({
-            lat: lat,
-            lng: lng,
-        })
-        return {
-            x: projected.x,
-            y: projected.y,
-        }
+        return projectLatLng(lat, lng)
     },
 
     // Helper method to sample points in a grid within a bounding box

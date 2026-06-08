@@ -1,3 +1,5 @@
+import TimeControl from '../../Basics/TimeControl_/TimeControl'
+
 const MONTH_LOOKUP = {
     january: 0,
     jan: 0,
@@ -372,10 +374,49 @@ function toMs(value) {
     return NaN
 }
 
+function mergeTimeBounds(primary, fallback) {
+    if (!fallback) return primary
+    return {
+        min: Number.isFinite(primary?.min) ? primary.min : fallback.min,
+        max: Number.isFinite(primary?.max) ? primary.max : fallback.max,
+        minIso: primary?.minIso || fallback.minIso || null,
+        maxIso: primary?.maxIso || fallback.maxIso || null,
+    }
+}
+
+function getMissionTimeBounds() {
+    try {
+        const missionTime =
+            typeof window !== 'undefined' ? window.L_?.configData?.time : null
+        if (!missionTime || missionTime.enabled !== true) return null
+        return computeBounds(missionTime)
+    } catch (_) {
+        return null
+    }
+}
+
+function getTimeControlBounds() {
+    try {
+        const startMs = toMs(TimeControl?.startTime)
+        const endMs = toMs(TimeControl?.endTime)
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
+        return {
+            min: Math.min(startMs, endMs),
+            max: Math.max(startMs, endMs),
+            minIso: toIsoString(new Date(Math.min(startMs, endMs))),
+            maxIso: toIsoString(new Date(Math.max(startMs, endMs))),
+        }
+    } catch (_) {
+        return null
+    }
+}
+
 function computeBounds(timeConfig) {
     if (!timeConfig) return { min: null, max: null, minIso: null, maxIso: null }
     const candidatesMin = [
         timeConfig.availableStart,
+        timeConfig.initialstart,
+        timeConfig.initialwindowstart,
         timeConfig.minAvailable,
         timeConfig.min,
         timeConfig.minTime,
@@ -383,6 +424,8 @@ function computeBounds(timeConfig) {
     ]
     const candidatesMax = [
         timeConfig.availableEnd,
+        timeConfig.initialend,
+        timeConfig.initialwindowend,
         timeConfig.maxAvailable,
         timeConfig.max,
         timeConfig.maxTime,
@@ -497,7 +540,9 @@ export function getLayerTimeMetadata(layerConfig) {
             ? time.format.trim()
             : '%Y-%m-%dT%H:%M:%SZ'
     const cadence = detectCadence(format)
-    const bounds = computeBounds(time)
+    let bounds = computeBounds(time)
+    bounds = mergeTimeBounds(bounds, getMissionTimeBounds())
+    bounds = mergeTimeBounds(bounds, getTimeControlBounds())
     return {
         enabled: true,
         format,
@@ -509,6 +554,39 @@ export function getLayerTimeMetadata(layerConfig) {
         currentStart: normalizeTimestamp(time.start),
         currentEnd: normalizeTimestamp(time.end),
     }
+}
+
+export function resolveLayerTimeRange(timeMeta, options = {}) {
+    const { startTime = null, endTime = null } = options
+    let rangeStart = startTime
+        ? new Date(startTime)
+        : timeMeta?.availableStart
+          ? new Date(timeMeta.availableStart)
+          : null
+    let rangeEnd = endTime
+        ? new Date(endTime)
+        : timeMeta?.availableEnd
+          ? new Date(timeMeta.availableEnd)
+          : null
+
+    if (!rangeStart || Number.isNaN(rangeStart.getTime())) {
+        const tcBounds = getTimeControlBounds()
+        if (tcBounds?.minIso) rangeStart = new Date(tcBounds.minIso)
+    }
+    if (!rangeEnd || Number.isNaN(rangeEnd.getTime())) {
+        const tcBounds = getTimeControlBounds()
+        if (tcBounds?.maxIso) rangeEnd = new Date(tcBounds.maxIso)
+    }
+
+    const missionBounds = getMissionTimeBounds()
+    if ((!rangeStart || Number.isNaN(rangeStart.getTime())) && missionBounds?.minIso) {
+        rangeStart = new Date(missionBounds.minIso)
+    }
+    if ((!rangeEnd || Number.isNaN(rangeEnd.getTime())) && missionBounds?.maxIso) {
+        rangeEnd = new Date(missionBounds.maxIso)
+    }
+
+    return { rangeStart, rangeEnd }
 }
 
 export function formatLayerTimeAnnouncement(displayName, meta) {

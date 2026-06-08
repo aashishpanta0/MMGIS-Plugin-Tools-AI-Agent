@@ -12,5 +12,8 @@ describe('renderer selection shape', () => {
     expect(typeof RENDERERS.render_contour_overlay).toBe('function')
     expect(typeof RENDERERS.render_layer_difference).toBe('function')
     expect(typeof RENDERERS.set_visible_layers_time).toBe('function')
+    expect(typeof RENDERERS.layer_difference).toBe('function')
+    expect(typeof RENDERERS.spatial_statistics).toBe('function')
+    expect(typeof RENDERERS.temporal_trends).toBe('function')
   })
 })

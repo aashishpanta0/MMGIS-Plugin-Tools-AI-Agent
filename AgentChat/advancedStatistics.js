@@ -15,6 +15,7 @@ import {
 import {
     getLayerTimeMetadata,
     detectCadence,
+    resolveLayerTimeRange,
 } from './timeUtils.js'
 
 /**
@@ -255,22 +256,20 @@ export async function calculateTemporalTrends(layerName, options = {}) {
     // Determine the time format for URL token substitution
     const timeFmt = timeMeta.format || '%Y-%m-%dT%H:%M:%SZ'
 
-    // Determine the time range – prefer user-supplied, fall back to layer bounds
-    const rangeStart = startTime
-        ? new Date(startTime)
-        : timeMeta.availableStart
-            ? new Date(timeMeta.availableStart)
-            : null
-    const rangeEnd = endTime
-        ? new Date(endTime)
-        : timeMeta.availableEnd
-            ? new Date(timeMeta.availableEnd)
-            : null
+    const { rangeStart, rangeEnd } = resolveLayerTimeRange(timeMeta, {
+        startTime,
+        endTime,
+    })
 
-    if (!rangeStart || !rangeEnd || isNaN(rangeStart) || isNaN(rangeEnd)) {
+    if (
+        !rangeStart ||
+        !rangeEnd ||
+        Number.isNaN(rangeStart.getTime()) ||
+        Number.isNaN(rangeEnd.getTime())
+    ) {
         throw new Error(
             'Unable to determine a valid time range for this layer. ' +
-            'Provide time_start / time_end or ensure the layer has availableStart/End configured.'
+            'Provide time_start / time_end or ensure the layer or mission has a configured time range.'
         )
     }
 
@@ -726,22 +725,21 @@ export async function calculateChangeDetection(layerName, options = {}) {
 
     const timeFmt = timeMeta.format || '%Y-%m-%dT%H:%M:%SZ'
 
-    // Determine before/after times
-    const resolvedBefore = beforeTime
-        ? new Date(beforeTime)
-        : timeMeta.availableStart
-            ? new Date(timeMeta.availableStart)
-            : null
-    const resolvedAfter = afterTime
-        ? new Date(afterTime)
-        : timeMeta.availableEnd
-            ? new Date(timeMeta.availableEnd)
-            : null
+    const { rangeStart: resolvedBefore, rangeEnd: resolvedAfter } =
+        resolveLayerTimeRange(timeMeta, {
+            startTime: beforeTime,
+            endTime: afterTime,
+        })
 
-    if (!resolvedBefore || !resolvedAfter || isNaN(resolvedBefore) || isNaN(resolvedAfter)) {
+    if (
+        !resolvedBefore ||
+        !resolvedAfter ||
+        Number.isNaN(resolvedBefore.getTime()) ||
+        Number.isNaN(resolvedAfter.getTime())
+    ) {
         throw new Error(
             'Unable to determine valid before/after times. ' +
-            'Provide before_time / after_time or ensure the layer has availableStart/End configured.'
+            'Provide before_time / after_time or ensure the layer or mission has a configured time range.'
         )
     }
 
