@@ -715,6 +715,86 @@ export function computeLayerTargetTime(meta, request) {
     }
 }
 
+function cadenceToPrecision(cadence) {
+    switch (cadence) {
+        case 'yearly':
+        case 'year':
+            return 'year'
+        case 'monthly':
+        case 'month':
+        case 'quarterly':
+            return 'month'
+        case 'hourly':
+        case 'hour':
+            return 'hour'
+        case 'daily':
+        case 'day':
+        case 'weekly':
+        default:
+            return 'day'
+    }
+}
+
+function cadenceToSnapUnit(cadence) {
+    switch (cadence) {
+        case 'yearly':
+            return 'year'
+        case 'monthly':
+        case 'quarterly':
+            return 'month'
+        case 'hourly':
+            return 'hour'
+        default:
+            return 'day'
+    }
+}
+
+/**
+ * Build inclusive start/end timestamps for one animation timestep.
+ * Daily data uses 00:00:00Z through 23:59:59Z for the same calendar day.
+ */
+export function buildCadenceTimeWindow(date, cadence = 'daily') {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null
+    const precision = cadenceToPrecision(cadence)
+    const snapped = snapToCadence(new Date(date.getTime()), cadenceToSnapUnit(cadence))
+    const startIso = toIsoString(snapped)
+    let endIso = computePrecisionEndIso(snapped, precision) || startIso
+    if (precision === 'hour') {
+        const end = new Date(snapped.getTime())
+        end.setUTCMinutes(59, 59, 0)
+        endIso = toIsoString(end)
+    }
+    return { startIso, endIso, currentIso: startIso }
+}
+
+/**
+ * Normalize an animation range so the first timestep starts at period
+ * beginning and the last ends at period end (e.g. daily → 00:00 to 23:59:59).
+ */
+export function normalizeRangeEndpointsForCadence(startInput, endInput, cadence = 'daily') {
+    const startDate = startInput ? new Date(startInput) : null
+    const endDate = endInput ? new Date(endInput) : null
+    if (
+        !startDate ||
+        !endDate ||
+        Number.isNaN(startDate.getTime()) ||
+        Number.isNaN(endDate.getTime())
+    ) {
+        return null
+    }
+    const precision = cadenceToPrecision(cadence)
+    const startWindow = buildCadenceTimeWindow(startDate, cadence)
+    const endWindow = buildCadenceTimeWindow(endDate, cadence)
+    if (!startWindow || !endWindow) return null
+    return {
+        startIso: startWindow.startIso,
+        endIso: endWindow.endIso,
+        startDate: new Date(startWindow.startIso),
+        endDate: new Date(endWindow.endIso),
+        precision,
+    }
+}
+
 /**
  * Given a date and a precision level, return the ISO string for the end of
  * that precision period.
@@ -744,8 +824,14 @@ export function computePrecisionEndIso(date, precision) {
                 date.getUTCDate(), 23, 59, 59
             ))
             break
+        case 'hour':
+            end = new Date(Date.UTC(
+                date.getUTCFullYear(), date.getUTCMonth(),
+                date.getUTCDate(), date.getUTCHours(), 59, 59
+            ))
+            break
         default:
-            // For hour/minute/second precision, return the same date
+            // For minute/second precision, return the same date
             return toIsoString(date)
     }
     return toIsoString(end)

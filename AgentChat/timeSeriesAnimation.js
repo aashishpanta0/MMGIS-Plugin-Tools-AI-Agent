@@ -1,11 +1,17 @@
 // Time Series Animation Functions for MMGIS Copilot
 // Provides temporal animation capabilities for visualizing changes over time
 
-import { 
-    buildLayerIndex, 
+import {
+    buildLayerIndex,
     findLayerMatch,
-    resolveArea
+    resolveArea,
 } from './rendererUtils.js'
+import {
+    getLayerTimeMetadata,
+    resolveLayerTimeRange,
+    buildCadenceTimeWindow,
+    normalizeRangeEndpointsForCadence,
+} from './timeUtils.js'
 
 // Animation state management
 const animationState = {
@@ -54,28 +60,29 @@ export async function createTimeSeriesAnimation(layerName, options = {}) {
         throw new Error(`Layer "${layerName}" not found`)
     }
 
-    const layerConfig = layerMatch.layer?.config || {}
-    const timeConfig = layerConfig.time || {}
+    const layerConfig = layerMatch.layer?.config || layerMatch.layer || {}
+    const timeMeta = getLayerTimeMetadata(layerConfig)
 
     // Infer interval from layer time format or name when not explicitly provided
     const inferredInterval = inferInterval(layerConfig, layerMatch.displayName)
 
-    // Infer time range from layer's availableStart/End
-    const inferredStart = timeConfig.availableStart
-        ? timeConfig.availableStart.split('T')[0]
-        : null
-    const inferredEnd = timeConfig.availableEnd
-        ? timeConfig.availableEnd.split('T')[0]
-        : null
-
-    const {
-        startTime = inferredStart || '2024-01-01',
-        endTime = inferredEnd || '2024-12-31',
-        interval = inferredInterval,
-        frameRate = 1000,
-        loopMode = 'loop',
-        area = null
-    } = options
+    const interval = options.interval || inferredInterval
+    const { rangeStart, rangeEnd } = resolveLayerTimeRange(timeMeta, {
+        startTime: options.startTime,
+        endTime: options.endTime,
+    })
+    const normalizedRange = normalizeRangeEndpointsForCadence(
+        options.startTime || rangeStart,
+        options.endTime || rangeEnd,
+        interval
+    )
+    const startTime =
+        normalizedRange?.startIso?.split('T')[0] || '2024-01-01'
+    const endTime =
+        normalizedRange?.endIso?.split('T')[0] || '2024-12-31'
+    const frameRate = options.frameRate ?? 1000
+    const loopMode = options.loopMode || 'loop'
+    const area = options.area ?? null
 
     // Generate time points
     const timePoints = generateAnimationFrames(startTime, endTime, interval)
@@ -132,34 +139,42 @@ function generateAnimationFrames(startTime, endTime, interval) {
     let current = new Date(start)
     
     while (current <= end) {
+        const window = buildCadenceTimeWindow(current, interval) || {
+            startIso: current.toISOString(),
+            endIso: current.toISOString(),
+            currentIso: current.toISOString(),
+        }
         frames.push({
-            timestamp: current.toISOString(),
-            date: current.toISOString().split('T')[0],
-            label: formatTimeLabel(current, interval)
+            timestamp: window.startIso,
+            startIso: window.startIso,
+            endIso: window.endIso,
+            currentIso: window.currentIso,
+            date: window.startIso.split('T')[0],
+            label: formatTimeLabel(current, interval),
         })
         
         // Increment based on interval
         switch (interval) {
             case 'daily':
-                current.setDate(current.getDate() + 1)
+                current.setUTCDate(current.getUTCDate() + 1)
                 break
             case 'weekly':
-                current.setDate(current.getDate() + 7)
+                current.setUTCDate(current.getUTCDate() + 7)
                 break
             case 'monthly':
-                current.setMonth(current.getMonth() + 1)
+                current.setUTCMonth(current.getUTCMonth() + 1)
                 break
             case 'quarterly':
-                current.setMonth(current.getMonth() + 3)
+                current.setUTCMonth(current.getUTCMonth() + 3)
                 break
             case 'yearly':
-                current.setFullYear(current.getFullYear() + 1)
+                current.setUTCFullYear(current.getUTCFullYear() + 1)
                 break
             case 'hourly':
-                current.setHours(current.getHours() + 1)
+                current.setUTCHours(current.getUTCHours() + 1)
                 break
             default:
-                current.setMonth(current.getMonth() + 1)
+                current.setUTCMonth(current.getUTCMonth() + 1)
         }
     }
     
@@ -294,12 +309,15 @@ async function showFrame(index) {
         // Use the global setTime API — this updates the TimeControl UI,
         // sets all layer times, and reloads every time-enabled layer.
         if (api.setTime) {
+            const startIso = frame.startIso || frame.timestamp
+            const endIso = frame.endIso || frame.timestamp
+            const currentIso = frame.currentIso || startIso
             api.setTime(
-                frame.timestamp,    // startTime
-                frame.timestamp,    // endTime
-                false,              // isRelative
-                '00:00:00',         // timeOffset
-                frame.timestamp     // currentTime
+                startIso,
+                endIso,
+                false,
+                '00:00:00',
+                currentIso
             )
         }
     }
@@ -473,7 +491,13 @@ function exportAnimationFrames() {
 export function formatAnimationResults(results) {
     const lines = []
     lines.push(`Time Series Animation Created: ${results.layerName}`)
-    lines.push(`Time Range: ${results.startTime} to ${results.endTime}`)
+    const firstFrame = results.timePoints?.[0]
+    const lastFrame = results.timePoints?.[results.timePoints.length - 1]
+    const rangeLabel =
+        firstFrame?.startIso && lastFrame?.endIso
+            ? `${firstFrame.startIso} to ${lastFrame.endIso}`
+            : `${results.startTime} to ${results.endTime}`
+    lines.push(`Time Range: ${rangeLabel}`)
     lines.push(`Interval: ${results.interval}`)
     lines.push(`Total Frames: ${results.totalFrames}`)
     lines.push(`Frame Rate: ${results.frameRate}ms per frame`)

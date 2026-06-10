@@ -20,6 +20,7 @@ import {
     resolveLayerSelection,
 } from './layerResolver'
 import './AgentChatTool.css'
+import useUIStore from '../../Basics/UserInterface_/store/uiStore'
 const HISTORY_KEY = 'mmgis.agent.chat.history.v1'
 const CONVERSATION_ID_KEY = 'mmgis.agent.chat.conversationId'
 const TRACE_PREF_KEY = 'mmgis.agent.chat.showDebug'
@@ -28,6 +29,11 @@ const OVERLAY_ID = 'mmgis-agentchat-overlay'
 const PANEL_ID = 'mmgis-agentchat-panel'
 const TOPBAR_LAUNCHER_ID = 'mmgisCopilotTopbarButton'
 const TOPBAR_WRAPPER_ID = 'mmgisCopilotTopbarWrapper'
+const CHAT_SIZE_SCALE = 0.75
+const CHAT_DEFAULT_WIDTH = Math.round(450 * CHAT_SIZE_SCALE)
+const CHAT_DEFAULT_HEIGHT = Math.round(580 * CHAT_SIZE_SCALE)
+const CHAT_MIN_WIDTH = Math.round(360 * CHAT_SIZE_SCALE)
+const CHAT_MIN_HEIGHT = Math.round(320 * CHAT_SIZE_SCALE)
 const DEFAULT_DEMO_QUERIES = [
     'What is MMGIS?',
     'List layers',
@@ -36,7 +42,7 @@ const DEFAULT_DEMO_QUERIES = [
     'Highlight areas where SWOT daily freeboard exceeds 0.1m',
     'Focus on the Chukchi Sea Region',
 ]
-// Base suggestions that work regardless of layers
+// Short welcome-only suggestions (hidden once the user sends a message)
 const BASE_COPILOT_SUGGESTIONS = [
     'List layers',
     'Which layers can I analyze?',
@@ -57,7 +63,7 @@ const ZOOM_SUGGESTION_REGIONS = [
     'Laptev Sea',
 ]
 const ZOOM_SUGGESTION_LEVELS = [3, 4, 5, 6, 7]
-const COPILOT_SUGGESTION_CHIP_RANGE = { min: 5, max: 8 }
+const COPILOT_SUGGESTION_CHIP_RANGE = { min: 4, max: 6 }
 const LOCAL_REGION_VIEWS = {
     'point barrow': { lat: 71.3875, lon: -156.4797, zoom: 6 },
     barrow: { lat: 71.3875, lon: -156.4797, zoom: 6 },
@@ -75,57 +81,31 @@ function getCopilotSuggestionPool() {
 
 function buildDynamicLayerSuggestions() {
     const suggestions = []
-    
-    // Try to get current layers from L_
-    if (typeof L_ !== 'undefined' && L_?.layers?.data) {
-        const layers = Object.values(L_.layers.data)
-        const layerNames = layers.map(l => l.display_name || l.displayName || l.name).filter(Boolean)
-        
-        // Find specific types of layers for targeted suggestions
-        const swotLayers = layerNames.filter(name => name.toLowerCase().includes('swot'))
-        const icesatLayers = layerNames.filter(name => name.toLowerCase().includes('icesat'))
-        const seaIceLayers = layerNames.filter(name => name.toLowerCase().includes('sea ice'))
-        const freeboardLayers = layerNames.filter(name => name.toLowerCase().includes('freeboard'))
-        
-        // Generate layer-specific suggestions
-        if (swotLayers.length > 0) {
-            suggestions.push(`Toggle on the ${swotLayers[0]}`)
-            suggestions.push(`Show statistics for ${swotLayers[0]}`)
-            if (freeboardLayers.length > 0) {
-                suggestions.push(`Highlight areas where SWOT daily freeboard exceeds 0.1m`)
-                suggestions.push(`Show statistics of SWOT freeboard for the full layer extent`)
-                suggestions.push(`Animate ${swotLayers[0]} over time`)
-            }
-        }
-        
-        if (icesatLayers.length > 0 && swotLayers.length > 0) {
-            suggestions.push(`What is the difference between ${swotLayers[0]} and ${icesatLayers[0]}?`)
-        }
-        
-        if (seaIceLayers.length > 0) {
-        }
-        
-        // Add general layer suggestions for whatever is available
-        const analyzableLayers = layerNames.filter(name => {
-            const lower = name.toLowerCase()
-            return lower.includes('swot') || lower.includes('icesat') || 
-                   lower.includes('concentration') || lower.includes('snow') ||
-                   lower.includes('freeboard') || lower.includes('sentinel')
-        })
-        
-        if (analyzableLayers.length > 0) {
-            const randomLayer = analyzableLayers[Math.floor(Math.random() * analyzableLayers.length)]
-            suggestions.push(`Calculate mean for ${randomLayer}`)
-            suggestions.push(`Highlight areas where ${randomLayer} exceeds 0.1m`)
-        }
+    if (typeof L_ === 'undefined' || !L_?.layers?.data) return suggestions
+
+    const layers = Object.values(L_.layers.data)
+    const layerNames = layers
+        .map((l) => l.display_name || l.displayName || l.name)
+        .filter(Boolean)
+    if (!layerNames.length) return suggestions
+
+    const visible = layerNames.filter((name) => {
+        const layer = layers.find(
+            (l) =>
+                (l.display_name || l.displayName || l.name) === name
+        )
+        return layer?.visibility === true || layer?.visible === true
+    })
+    const primary = visible[0] || layerNames[0]
+
+    suggestions.push(`Show statistics for ${primary}`)
+    if (layerNames.length > 1) {
+        const secondary = layerNames.find((n) => n !== primary) || layerNames[1]
+        suggestions.push(
+            `What is the difference between ${primary} and ${secondary}?`
+        )
     }
-    
-    // Add fallback suggestions if no dynamic ones were generated
-    if (suggestions.length === 0) {
-        suggestions.push('Turn on a data layer to analyze')
-        suggestions.push('Show available data layers')
-    }
-    
+
     return suggestions
 }
 
@@ -156,29 +136,65 @@ function formatZoomSuggestion(region) {
 
 // IMPORTANT: declare before any reference (avoid TDZ)
 
+function clearPersistedChatState() {
+    try {
+        localStorage.removeItem(HISTORY_KEY)
+        localStorage.removeItem(CONVERSATION_ID_KEY)
+    } catch (_) {}
+}
+
+function clearSeparatedPanelState() {
+    try {
+        const panel = document.getElementById('toolPanelSeparated_AgentChat')
+        if (panel) panel.style.display = 'none'
+    } catch (_) {}
+}
+
+function setToolbarActive(active) {
+    try {
+        if (active) {
+            useUIStore.getState().addActiveSeparatedTool('AgentChatTool')
+            if (window.ToolController_) {
+                const list = window.ToolController_.activeSeparatedTools
+                if (!list.includes('AgentChatTool')) {
+                    list.push('AgentChatTool')
+                }
+            }
+        } else {
+            useUIStore.getState().removeActiveSeparatedTool('AgentChatTool')
+            if (window.ToolController_) {
+                window.ToolController_.activeSeparatedTools =
+                    window.ToolController_.activeSeparatedTools.filter(
+                        (name) => name !== 'AgentChatTool'
+                    )
+            }
+        }
+    } catch (_) {}
+}
+
 const AgentChatTool = {
     height: 0,
     width: 'full',
     MMGISInterface: null,
     made: false,
     initialize: function () {
-        hideToolbarButtons()
+        clearPersistedChatState()
+        hideDuplicateToolbarButton()
+        clearSeparatedPanelState()
         ensureTopbarLauncher()
     },
     make() {
         this.MMGISInterface = new interfaceWithMMGIS()
         this.made = true
-        hideToolbarButtons()
+        hideDuplicateToolbarButton()
+        clearSeparatedPanelState()
+        setToolbarActive(true)
         ensureTopbarLauncher()
     },
     destroy() {
         if (this.MMGISInterface) this.MMGISInterface.separateFromMMGIS()
         this.made = false
-        // Remove active class from the button when closing from inside the tool
-        try {
-            const btn = document.querySelector('#toolButtonSeparated_AgentChat')
-            if (btn) btn.classList.remove('active')
-        } catch (_) {}
+        setToolbarActive(false)
     },
     getUrlString() {
         return ''
@@ -202,9 +218,11 @@ function interfaceWithMMGIS() {
         }
     } catch (_) {}
 
+    clearPersistedChatState()
+
     const state = {
         toolRegistry: null,
-        history: loadHistory(),
+        history: [],
         transcriptEl: null,
         inputEl: null,
         sendBtn: null,
@@ -223,7 +241,7 @@ function interfaceWithMMGIS() {
         demoQueries: DEFAULT_DEMO_QUERIES.slice(),
         demoIndex: loadDemoIndex(DEFAULT_DEMO_QUERIES.length),
         lastUserQuery: '',
-        conversationId: loadConversationId(),
+        conversationId: null,
     }
     window.mmgisAgentChat = window.mmgisAgentChat || {}
     window.mmgisAgentChat.logLocalAnalytics = function (message) {
@@ -580,8 +598,8 @@ function interfaceWithMMGIS() {
         overlay.style.position = 'fixed'
         overlay.style.zIndex = '2000'
         overlay.style.pointerEvents = 'none'
-        const startW = 450
-        const startH = 580
+        const startW = CHAT_DEFAULT_WIDTH
+        const startH = CHAT_DEFAULT_HEIGHT
         const topPad = 40
         const rightPad = 40
         overlay.style.left = `${Math.max(
@@ -1147,7 +1165,6 @@ function interfaceWithMMGIS() {
         const indicator = state.isThinking ? renderThinkingIndicator() : ''
         state.transcriptEl.innerHTML = html + indicator
         
-        // Always render suggestions
         renderSuggestions()
         
         // Always scroll after rendering messages
@@ -1157,10 +1174,15 @@ function interfaceWithMMGIS() {
     function renderSuggestions() {
         if (!state.suggestionsEl) return
 
-        const suggestions = state.history.length
-            ? ensureContextualSuggestions()
-            : ensureWelcomeSuggestions()
-            
+        // Hide example chips once the user has started a conversation
+        if (state.history.length > 0) {
+            state.suggestionsEl.innerHTML = ''
+            state.suggestionsEl.style.display = 'none'
+            return
+        }
+
+        state.suggestionsEl.style.display = ''
+        const suggestions = ensureWelcomeSuggestions()
         const chips = (suggestions?.chips || [])
             .map(
                 (cmd) => `
@@ -1174,9 +1196,9 @@ function interfaceWithMMGIS() {
           </button>`
             )
             .join('')
-            
+
         state.suggestionsEl.innerHTML = chips
-            ? `<div class="ac-suggest-label">Example queries:</div><div class="ac-suggest-grid" role="list">${chips}</div>`
+            ? `<div class="ac-suggest-label">Try asking:</div><div class="ac-suggest-grid" role="list">${chips}</div>`
             : ''
     }
 
@@ -1523,8 +1545,8 @@ function interfaceWithMMGIS() {
         }
         function onResizeMove(e) {
             if (!rs) return
-            const minW = 360,
-                minH = 320
+            const minW = CHAT_MIN_WIDTH,
+                minH = CHAT_MIN_HEIGHT
             const maxW = Math.min(window.innerWidth - 40, 900)
             const maxH = Math.min(window.innerHeight - 40, 900)
 
@@ -2089,32 +2111,8 @@ function interfaceWithMMGIS() {
         }
     }
 
-    function loadConversationId() {
-        try {
-            return localStorage.getItem(CONVERSATION_ID_KEY) || null
-        } catch {
-            return null
-        }
-    }
-
-    function saveConversationId(id) {
-        try {
-            if (id) {
-                localStorage.setItem(CONVERSATION_ID_KEY, id)
-            } else {
-                localStorage.removeItem(CONVERSATION_ID_KEY)
-            }
-        } catch (_) {}
-    }
-
-    function loadHistory() {
-        try {
-            const raw = localStorage.getItem(HISTORY_KEY)
-            const parsed = raw ? JSON.parse(raw) : []
-            return Array.isArray(parsed) ? parsed.slice(-200) : []
-        } catch {
-            return []
-        }
+    function saveConversationId() {
+        // Chat state is session-only; do not persist across page refresh.
     }
 
     function loadTracePreference() {
@@ -2189,12 +2187,7 @@ function interfaceWithMMGIS() {
     }
 
     function saveHistory() {
-        try {
-            localStorage.setItem(
-                HISTORY_KEY,
-                JSON.stringify(state.history.slice(-200))
-            )
-        } catch {}
+        // Chat state is session-only; do not persist across page refresh.
     }
     function clearConversation() {
         state.history = []
@@ -2261,7 +2254,12 @@ function interfaceWithMMGIS() {
     }
 
     function createWelcomeSuggestions() {
-        const pool = getCopilotSuggestionPool()
+        const pool = Array.from(
+            new Set([
+                ...buildDynamicLayerSuggestions(),
+                ...BASE_COPILOT_SUGGESTIONS,
+            ])
+        )
         const chipCount = boundedRandomCount(
             COPILOT_SUGGESTION_CHIP_RANGE.min,
             COPILOT_SUGGESTION_CHIP_RANGE.max,
@@ -2393,8 +2391,21 @@ function interfaceWithMMGIS() {
 
     function rotateInputPlaceholder() {
         if (!state.inputEl) return
-        const pool = getCopilotSuggestionPool()
-        if (!pool.length) return
+        if (state.history.length > 0) {
+            state.currentPlaceholder = null
+            applyInputPlaceholder('')
+            return
+        }
+        const pool = Array.from(
+            new Set([
+                ...buildDynamicLayerSuggestions(),
+                ...BASE_COPILOT_SUGGESTIONS,
+            ])
+        )
+        if (!pool.length) {
+            applyInputPlaceholder('')
+            return
+        }
         const exclude = pool.length > 1 ? state.currentPlaceholder : null
         let workingPool = pool
         if (exclude) {
@@ -2410,7 +2421,7 @@ function interfaceWithMMGIS() {
 
     function applyInputPlaceholder(text) {
         if (!state.inputEl) return
-        const formatted = text ? `Ask: "${text}"` : 'Ask the Copilot'
+        const formatted = text ? `Try: "${text}"` : 'Ask the Copilot'
         state.inputEl.setAttribute('placeholder', formatted)
     }
 
@@ -2465,19 +2476,14 @@ function interfaceWithMMGIS() {
     }
 }
 
-function hideToolbarButtons(retry = 0) {
-    const ids = ['toolButtonAgentChat', 'toolButtonSeparated_AgentChat']
-    let hidden = true
-    ids.forEach((id) => {
-        const el = document.getElementById(id)
-        if (el) {
-            el.style.display = 'none'
-        } else {
-            hidden = false
-        }
-    })
-    if (!hidden && retry < 10) {
-        setTimeout(() => hideToolbarButtons(retry + 1), 200)
+function hideDuplicateToolbarButton(retry = 0) {
+    const el = document.getElementById('toolButtonAgentChat')
+    if (el) {
+        el.style.display = 'none'
+        return
+    }
+    if (retry < 10) {
+        setTimeout(() => hideDuplicateToolbarButton(retry + 1), 200)
     }
 }
 
